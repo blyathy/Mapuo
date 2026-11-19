@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Meridian: live cameras around the world</title>
+
+<!-- ============================== CSS ============================== -->
+<style>
+:root {
+  --ink: #0e1a24; --panel: #142330; --raise: #1b2e3d; --line: #28404f;
+  --text: #e7eef3; --muted: #92a7b5; --signal: #6fe0c5; --live: #ff6b5a;
+  --radius: 14px; --ease: cubic-bezier(.2, .7, .2, 1);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--ink); color: var(--text); overflow: hidden;
+  font: 15px/1.5 "Avenir Next", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+
+/* Layout */
+.app { display: grid; grid-template-columns: 380px minmax(0, 1fr); height: 100vh; height: 100dvh; }
+.stage { position: relative; min-height: 0; min-width: 0; }
+#map { position: absolute; top: 0; right: 0; bottom: 0; left: 0; background: var(--ink); }
+.map-fallback { height: 100%; display: grid; place-content: center; gap: 6px; padding: 24px; text-align: center; color: var(--muted); }
+.map-fallback strong { color: var(--text); font-size: 18px; }
+
+/* Sidebar */
+.sidebar { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-right: 1px solid var(--line); }
+.brand { padding: 26px 22px 12px; }
+.brand h1 { font-size: 30px; line-height: 1.1; letter-spacing: -.03em; font-weight: 700; }
+.brand p { color: var(--muted); margin-top: 4px; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 22px 14px; }
+.chip {
+  font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; background: transparent;
+  border: 1px solid var(--line); border-radius: 999px; padding: 5px 13px;
+  transition: color .2s, border-color .2s, background .2s;
+}
+.chip:hover { color: var(--text); border-color: var(--muted); }
+.chip[aria-pressed="true"] { color: #07241d; background: var(--signal); border-color: var(--signal); font-weight: 600; }
+
+.cards {
+  list-style: none; padding: 0 14px 14px; flex: 1; overflow-y: auto; min-height: 0;
+  display: grid; gap: 10px; align-content: start;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+}
+.cards::-webkit-scrollbar { width: 8px; }
+.cards::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+.cards::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+.card {
+  display: grid; gap: 4px; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer;
+  background: var(--raise); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px;
+  transition: transform .2s var(--ease), border-color .2s, background .2s;
+}
+.card:hover { transform: translateY(-2px); border-color: var(--muted); background: #20374a; }
+.card[aria-current="true"] { border-color: var(--signal); box-shadow: inset 3px 0 0 var(--signal); }
+.card__top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.card__title { font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
+.card__place { color: var(--muted); font-size: 13.5px; }
+.card__foot { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+.badge { font-size: 12px; font-weight: 600; color: var(--live); }
+.tag { font-size: 12.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 1px 8px; }
+.tod { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); }
+.tod::before { content: ""; width: 10px; height: 10px; border-radius: 50%; }
+.tod--day::before { background: #f6c85f; }
+.tod--night::before { box-shadow: inset -3.5px 0 0 0 #b9c7ff; }
+.foot { padding: 12px 22px calc(14px + env(safe-area-inset-bottom, 0px)); color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--line); }
+
+/* Map overrides and pins */
+.leaflet-container { background: var(--ink); font: inherit; }
+.leaflet-bar a, .leaflet-bar a:hover { background: var(--panel); color: var(--text); border-color: var(--line); }
+.leaflet-bar a:hover { background: var(--raise); }
+.leaflet-control-attribution { background: rgba(14, 26, 36, .85) !important; color: var(--muted) !important; }
+.leaflet-control-attribution a { color: var(--muted) !important; }
+.pin span {
+  display: block; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--live); border: 3px solid var(--ink); box-shadow: 0 0 0 1.5px var(--live);
+  transition: transform .2s var(--ease);
+}
+.pin:hover span { transform: scale(1.3); }
+.pin.is-active span { background: var(--signal); box-shadow: 0 0 0 1.5px var(--signal); animation: ping 1.8s ease-out infinite; }
+@keyframes ping {
+  0% { box-shadow: 0 0 0 1.5px var(--signal), 0 0 0 0 rgba(111, 224, 197, .55); }
+  100% { box-shadow: 0 0 0 1.5px var(--signal), 0 0 0 16px rgba(111, 224, 197, 0); }
+}
+.tip { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; box-shadow: none; font-weight: 600; padding: 4px 10px; }
+.leaflet-tooltip-top.tip::before { border-top-color: var(--line); }
+
+/* Status notice */
+.notice {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 1200;
+  width: max-content; max-width: min(560px, calc(100% - 100px)); cursor: pointer;
+  background: var(--panel); border: 1px solid var(--live); border-radius: 12px; padding: 10px 14px;
+  font-size: 13.5px; box-shadow: 0 12px 30px rgba(0, 0, 0, .4);
+}
+.notice[hidden] { display: none; }
+
+/* Video panel */
+.viewer {
+  position: absolute; left: 20px; bottom: 20px; z-index: 1100; width: min(520px, calc(100% - 40px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: 18px; overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+  opacity: 0; visibility: hidden; transform: translateY(18px);
+  transition: opacity .3s var(--ease), transform .3s var(--ease), visibility 0s .3s;
+}
+.viewer.is-open { opacity: 1; visibility: visible; transform: none; transition-delay: 0s; }
+.viewer__frame { position: relative; padding-top: 56.25%; background: #000; }
+.viewer__frame iframe, .frame-empty { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; }
+.frame-empty { display: grid; place-content: center; gap: 6px; padding: 20px; text-align: center; color: var(--muted); font-size: 14px; }
+.viewer__body { padding: 16px 18px 18px; display: grid; gap: 10px; }
+.viewer__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.viewer h2 { font-size: 20px; letter-spacing: -.02em; line-height: 1.2; }
+.viewer__place, .viewer__meta, .viewer__hint { color: var(--muted); font-size: 13.5px; }
+.viewer__hint { font-size: 12.5px; }
+.viewer__desc { max-width: 62ch; }
+.viewer__actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; }
+.icon-btn {
+  flex: none; width: 34px; height: 34px; border-radius: 50%; cursor: pointer; font: inherit; font-size: 22px; line-height: 1;
+  color: var(--muted); background: var(--raise); border: 1px solid var(--line);
+  transition: color .2s, background .2s, transform .2s var(--ease);
+}
+.icon-btn:hover { color: var(--text); background: #20374a; transform: rotate(90deg); }
+.btn {
+  display: inline-flex; align-items: center; padding: 9px 15px; border-radius: 10px; cursor: pointer;
+  font: inherit; font-weight: 650; font-size: 14px; text-decoration: none;
+  color: #07241d; background: var(--signal); border: 1px solid var(--signal);
+  transition: transform .2s var(--ease), filter .2s, background .2s;
+}
+.btn:hover { transform: translateY(-1px); filter: brightness(1.08); }
+.btn--ghost { color: var(--text); background: transparent; border-color: var(--line); }
+.btn--ghost:hover { background: var(--raise); filter: none; }
+
+/* Mobile */
+@media (max-width: 820px) {
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 44vh minmax(0, 1fr); grid-template-rows: 44dvh minmax(0, 1fr); }
+  .stage { order: 1; }
+  .sidebar { order: 2; border-right: 0; border-top: 1px solid var(--line); }
+  .brand { padding: 16px 16px 8px; }
+  .brand h1 { font-size: 24px; }
+  .filters { padding: 6px 16px 12px; }
+  .viewer {
+    position: fixed; left: 0; right: 0; bottom: 0; width: auto; max-height: 88vh; max-height: 88dvh; overflow-y: auto;
+    border-radius: 18px 18px 0 0; border-bottom: 0;
+  }
+  .viewer__body { padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+  .notice { max-width: calc(100% - 90px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition-duration: .01ms !important; }
+}
+</style>
+</head>
+
+<!-- ============================== HTML ============================== -->
+<body>
+<div class="app">
+  <aside class="sidebar" aria-label="Camera list">
+    <header class="brand">
+      <h1>Meridian</h1>
+      <p>Live cameras, pinned to the map.</p>
+    </header>
+    <div class="filters" id="filters" role="group" aria-label="Filter by category"></div>
+    <ul class="cards" id="cards"></ul>
+    <footer class="foot">Streams belong to their YouTube channels and can go offline at any time.</footer>
+  </aside>
+
+  <main class="stage">
+    <div id="map" aria-label="World map of live cameras"></div>
+    <div class="notice" id="notice" role="status" hidden title="Click to dismiss"></div>
+
+    <section class="viewer" id="viewer" aria-hidden="true" aria-label="Live video">
+      <div class="viewer__frame" id="frame"></div>
+      <div class="viewer__body">
+        <div class="viewer__head">
+          <div>
+            <h2 id="vTitle"></h2>
+            <p class="viewer__place" id="vPlace"></p>
+          </div>
+          <button class="icon-btn" id="vClose" type="button" aria-label="Close video">&times;</button>
+        </div>
+        <p class="viewer__desc" id="vDesc"></p>
+        <p class="viewer__meta" id="vMeta"></p>
+        <div class="viewer__actions">
+          <a class="btn" id="vYouTube" target="_blank" rel="noopener">Open on YouTube</a>
+          <button class="btn btn--ghost" id="vRecenter" type="button">Center on map</button>
+          <button class="btn btn--ghost" id="vAlt" type="button">Try alternate player</button>
+        </div>
+        <p class="viewer__hint">Video not playing? Error 153 means YouTube can’t tell which site is embedding it: open this page from http://localhost:8000 rather than as a file, and turn off extensions that block the Referer header. Otherwise the stream may be offline.</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ============================== JavaScript ============================== -->
+<script>
+/* ---------- Camera data (edit this array to add or fix cameras) ----------
+   embedUrl: direct YouTube embed link, https://www.youtube.com/embed/VIDEO_ID
+   Live stream IDs change when a broadcaster restarts. If a camera shows
+   "Video unavailable", find its current stream on YouTube and replace the ID. */
+const CAMERAS = [
+  {
+    id: "times-square", title: "Times Square", place: "New York, United States", category: "City",
+    lat: 40.7588, lng: -73.9848, tz: "America/New_York",
+    embedUrl: "https://www.youtube.com/live/ADXWeM9wsDw?si=eG6EusGyagp7q5gh",
+    description: "The crossing of Broadway and Seventh Avenue, busy and bright at any hour."
+  },
+  {
+    id: "shibuya-crossing", title: "Shibuya Crossing", place: "Tokyo, Japan", category: "City",
+    lat: 35.6604, lng: 139.6983, tz: "Asia/Tokyo",
+    embedUrl: "https://www.youtube.com/embed/d1JuNg7knNo",
+    description: "Tokyo’s busiest intersection, where crowds cross from every direction at once."
+  },
+  {
+    id: "piazza-venezia", title: "Piazza Venezia", place: "Rome, Italy", category: "Landmark",
+    lat: 41.8945, lng: 12.4794, tz: "Europe/Rome",
+    embedUrl: "https://www.youtube.com/live/wwkVJ-jL3CI?feature=shared",
+    description: "Rome’s central square, framed by the Victor Emmanuel II Monument and Palazzo Venezia."
+  },
+  {
+    id: "taronga-capybaras", title: "Taronga Zoo capybaras", place: "Sydney, Australia", category: "Wildlife",
+    lat: -33.8436, lng: 151.2391, tz: "Australia/Sydney",
+    embedUrl: "https://www.youtube.com/live/9crTL4FlpTA?si=MaADs5Pb-KCYf0-n",
+    description: "Capybaras lounging in their enclosure at Taronga Zoo, with Sydney Harbour behind them."
+  },
+  {
+    id: "duke-farms-eagles", title: "Duke Farms eagle nest", place: "Hillsborough, New Jersey, United States", category: "Wildlife",
+    lat: 40.5441, lng: -74.6247, tz: "America/New_York",
+    embedUrl: "https://www.youtube.com/live/TA6vV8bkhc8?feature=shared",
+    description: "A bald eagle nest at a conservation site in central New Jersey."
+  }
+];
+
+/* ---------- Helpers and state ---------- */
+const $ = (sel) => document.querySelector(sel);
+const byId = (id) => CAMERAS.find((c) => c.id === id);
+const isMobile = () => window.matchMedia("(max-width: 820px)").matches;
+const state = { activeId: null, category: "All", altPlayer: false };
+const viewer = $("#viewer");
+let map = null;
+const markers = new Map();
+
+function notify(message) {
+  const box = $("#notice");
+  box.textContent = message;
+  box.hidden = false;
+}
+$("#notice").addEventListener("click", () => { $("#notice").hidden = true; });
+
+function localTime(tz) {
+  const now = new Date();
+  const text = new Intl.DateTimeFormat([], { hour: "numeric", minute: "2-digit", timeZone: tz }).format(now);
+  const hour = Number(new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hour12: false, timeZone: tz }).format(now)) % 24;
+  return { text, isDay: hour >= 6 && hour < 19 };
+}
+
+function watchUrl(cam) {
+  return cam.embedUrl.replace("/embed/", "/watch?v=");
+}
+
+function embedSrc(cam) {
+  const params = new URLSearchParams({ autoplay: 1, mute: 1, rel: 0, playsinline: 1 });
+  // Tell YouTube which site is embedding the player (it answers error 153 otherwise)
+  if (location.protocol.startsWith("http")) { params.set("enablejsapi", 1); params.set("origin", location.origin); }
+  const base = state.altPlayer ? cam.embedUrl.replace("www.youtube.com", "www.youtube-nocookie.com") : cam.embedUrl;
+  return base + "?" + params;
+}
+
+/* ---------- Sidebar ---------- */
+function visibleCameras() {
+  return CAMERAS.filter((c) => state.category === "All" || c.category === state.category);
+}
+
+function renderFilters() {
+  const cats = ["All", ...new Set(CAMERAS.map((c) => c.category))];
+  $("#filters").innerHTML = cats
+    .map((c) => `<button class="chip" type="button" data-cat="${c}" aria-pressed="${c === state.category}">${c}</button>`)
+    .join("");
+}
+
+function renderCards() {
+  $("#cards").innerHTML = visibleCameras().map((c) => `
+    <li>
+      <button class="card" type="button" data-id="${c.id}" aria-current="${c.id === state.activeId}">
+        <span class="card__top">
+          <span class="card__title">${c.title}</span>
+          <span class="badge">Live</span>
+        </span>
+        <span class="card__place">${c.place}</span>
+        <span class="card__foot">
+          <span class="tag">${c.category}</span>
+          <span class="tod" data-tz="${c.tz}"><span class="clock"></span> local</span>
+        </span>
+      </button>
+    </li>`).join("");
+  paintClocks();
+}
+
+function paintClocks() {
+  document.querySelectorAll(".tod[data-tz]").forEach((el) => {
+    const { text, isDay } = localTime(el.dataset.tz);
+    el.classList.toggle("tod--day", isDay);
+    el.classList.toggle("tod--night", !isDay);
+    el.querySelector(".clock").textContent = text;
+  });
+}
+setInterval(paintClocks, 30000);
+
+/* ---------- Video panel ---------- */
+function fillViewer(cam) {
+  const frame = $("#frame");
+  frame.textContent = "";
+  const iframe = document.createElement("iframe");
+  iframe.src = embedSrc(cam);
+  iframe.title = cam.title + " live stream";
+  iframe.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+  iframe.allowFullscreen = true;
+  iframe.referrerPolicy = "strict-origin-when-cross-origin";
+  frame.appendChild(iframe);
+  $("#vTitle").textContent = cam.title;
+  $("#vPlace").textContent = cam.place;
+  $("#vDesc").textContent = cam.description;
+  $("#vMeta").textContent = `${cam.lat.toFixed(4)}\u00B0, ${cam.lng.toFixed(4)}\u00B0 \u2013 ${cam.category}`;
+  $("#vYouTube").href = watchUrl(cam);
+}
+
+function focusMap(cam) {
+  if (!map) return;
+  const zoom = Math.max(map.getZoom(), 5);
+  let target = L.latLng(cam.lat, cam.lng);
+  if (!isMobile()) {
+    // Shift the view so the pin sits above the video panel instead of under it
+    const shifted = map.project(target, zoom).add([0, (viewer.offsetHeight || 420) / 2]);
+    target = map.unproject(shifted, zoom);
+  }
+  map.flyTo(target, zoom, { duration: 1.1 });
+}
+
+function syncMarkers() {
+  if (!map) return;
+  const visible = new Set(visibleCameras().map((c) => c.id));
+  markers.forEach((marker, id) => {
+    if (visible.has(id)) { if (!map.hasLayer(marker)) marker.addTo(map); }
+    else map.removeLayer(marker);
+    const el = marker.getElement();
+    if (el) el.classList.toggle("is-active", id === state.activeId);
+  });
+}
+
+function selectCamera(id) {
+  const cam = byId(id);
+  if (!cam) return;
+  state.activeId = id;
+  fillViewer(cam);
+  viewer.classList.add("is-open");
+  viewer.setAttribute("aria-hidden", "false");
+  focusMap(cam);
+  document.querySelectorAll(".card").forEach((c) => {
+    const active = c.dataset.id === id;
+    c.setAttribute("aria-current", String(active));
+    if (active) c.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  });
+  syncMarkers();
+}
+
+function closeViewer() {
+  state.activeId = null;
+  viewer.classList.remove("is-open");
+  viewer.setAttribute("aria-hidden", "true");
+  $("#frame").textContent = ""; // removing the iframe stops playback
+  document.querySelectorAll(".card").forEach((c) => c.setAttribute("aria-current", "false"));
+  syncMarkers();
+}
+
+/* ---------- Events ---------- */
+$("#cards").addEventListener("click", (e) => {
+  const card = e.target.closest(".card");
+  if (card) selectCamera(card.dataset.id);
+});
+$("#filters").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  state.category = chip.dataset.cat;
+  if (state.activeId && !visibleCameras().some((c) => c.id === state.activeId)) closeViewer();
+  renderFilters();
+  renderCards();
+  syncMarkers();
+});
+$("#vClose").addEventListener("click", closeViewer);
+$("#vAlt").addEventListener("click", () => { state.altPlayer = !state.altPlayer; const cam = byId(state.activeId); if (cam) fillViewer(cam); });
+$("#vRecenter").addEventListener("click", () => { const cam = byId(state.activeId); if (cam) focusMap(cam); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.activeId) closeViewer(); });
+
+/* ---------- Map (Leaflet loads after the UI, so the list and videos work even if it fails) ---------- */
+const LEAFLET_SOURCES = [
+  ["https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css", "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"],
+  ["https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css", "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"],
+  ["https://unpkg.com/leaflet@1.9.4/dist/leaflet.css", "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"]
+];
+
+function loadLeaflet(i) {
+  if (i >= LEAFLET_SOURCES.length) {
+    $("#map").innerHTML = '<div class="map-fallback"><strong>The map couldn’t load</strong><span>Check your internet connection or ad blocker, then reload. You can still watch cameras from the list.</span></div>';
+    return;
+  }
+  const [cssUrl, jsUrl] = LEAFLET_SOURCES[i];
+  const link = Object.assign(document.createElement("link"), { rel: "stylesheet", href: cssUrl });
+  const script = Object.assign(document.createElement("script"), { src: jsUrl });
+  let pending = 2, failed = false;
+  const fail = () => { if (failed) return; failed = true; link.remove(); script.remove(); loadLeaflet(i + 1); };
+  const ok = () => { if (failed) return; if (--pending === 0) (window.L ? initMap() : fail()); };
+  link.onload = script.onload = ok;
+  link.onerror = script.onerror = fail;
+  document.head.append(link, script);
+}
+
+/* ---------- Basemap ----------
+   Free tile servers keep changing their rules (CARTO wants a key, OpenStreetMap blocks many local setups with a
+   403 tile), so by default the map draws country outlines from the world-atlas data file instead: no tile server,
+   no key. To use street tiles from your own provider, paste a tile URL below. */
+const CUSTOM_TILE_URL = ""; // e.g. "https://api.maptiler.com/maps/dataviz-dark/{z}/{x}/{y}.png?key=YOUR_KEY"
+const ATLAS_SOURCES = [
+  "https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-50m.json",
+  "https://unpkg.com/world-atlas@2.0.2/countries-50m.json"
+];
+const LAND = "#1c3243", BORDER = "#31506a", GRID = "rgba(146, 167, 181, .16)";
+
+async function fetchFirst(urls) {
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return await res.json();
+    } catch (err) { /* try the next source */ }
+  }
+  throw new Error("No data source reachable");
+}
+
+// Converts the TopoJSON file into GeoJSON that Leaflet can draw
+function topoToGeoJSON(topo, name) {
+  const [sx, sy] = topo.transform.scale;
+  const [tx, ty] = topo.transform.translate;
+  const arcs = topo.arcs.map((arc) => {
+    let x = 0, y = 0;
+    return arc.map(([dx, dy]) => { x += dx; y += dy; return [x * sx + tx, y * sy + ty]; });
+  });
+  const ring = (indexes) => {
+    const pts = [];
+    for (const i of indexes) {
+      const arc = i < 0 ? arcs[~i].slice().reverse() : arcs[i];
+      for (let k = pts.length ? 1 : 0; k < arc.length; k++) pts.push(arc[k]);
+    }
+    return pts;
+  };
+  const features = topo.objects[name].geometries
+    .filter((g) => g.type === "Polygon" || g.type === "MultiPolygon")
+    .map((g) => ({
+      type: "Feature", properties: g.properties || {},
+      geometry: g.type === "Polygon"
+        ? { type: "Polygon", coordinates: g.arcs.map(ring) }
+        : { type: "MultiPolygon", coordinates: g.arcs.map((poly) => poly.map(ring)) }
+    }));
+  return { type: "FeatureCollection", features };
+}
+
+function drawGraticule(canvas) {
+  const style = { color: GRID, weight: 1, interactive: false, renderer: canvas };
+  for (let lng = -180; lng <= 180; lng += 30) L.polyline([[-85, lng], [85, lng]], style).addTo(map);
+  for (let lat = -60; lat <= 60; lat += 30) L.polyline([[lat, -180], [lat, 180]], style).addTo(map);
+}
+
+function addBasemap() {
+  if (CUSTOM_TILE_URL) {
+    L.tileLayer(CUSTOM_TILE_URL, { maxZoom: 18, attribution: "&copy; OpenStreetMap contributors" }).addTo(map);
+    return;
+  }
+  const canvas = L.canvas({ padding: 0.5 });
+  map.attributionControl.addAttribution("Country outlines: Natural Earth");
+  fetchFirst(ATLAS_SOURCES)
+    .then((topo) => {
+      L.geoJSON(topoToGeoJSON(topo, "countries"), {
+        renderer: canvas, interactive: false,
+        style: { fillColor: LAND, fillOpacity: 1, color: BORDER, weight: 0.7 }
+      }).addTo(map);
+      drawGraticule(canvas);
+    })
+    .catch(() => {
+      drawGraticule(canvas);
+      notify("The country outlines couldn’t load, so the map is blank. The camera pins still work. Check your internet connection or ad blocker.");
+    });
+}
+
+function initMap() {
+  map = L.map("map", {
+    minZoom: 2, maxZoom: CUSTOM_TILE_URL ? 18 : 7, zoomControl: false,
+    maxBounds: [[-85, -180], [85, 180]], maxBoundsViscosity: 1
+  }).setView([25, 10], 2);
+  L.control.zoom({ position: "topright" }).addTo(map);
+  addBasemap();
+
+  CAMERAS.forEach((cam) => {
+    const icon = L.divIcon({ className: "pin", html: "<span></span>", iconSize: [24, 24] });
+    const marker = L.marker([cam.lat, cam.lng], { icon, title: cam.title, keyboard: true })
+      .bindTooltip(cam.title, { direction: "top", offset: [0, -12], className: "tip" })
+      .on("click", () => selectCamera(cam.id))
+      .addTo(map);
+    markers.set(cam.id, marker);
+  });
+
+  syncMarkers();
+  setTimeout(() => map.invalidateSize(), 0);
+  window.addEventListener("load", () => map.invalidateSize());
+  const active = byId(state.activeId);
+  if (active) focusMap(active);
+}
+
+/* ---------- Init ---------- */
+renderFilters();
+renderCards();
+loadLeaflet(0);
+if (location.protocol === "file:") {
+  notify("This page was opened as a local file, so YouTube will refuse the videos (error 153). Run python3 -m http.server 8000 in this folder, then open http://localhost:8000.");
+}
+</script>
+</body>
+</html>
